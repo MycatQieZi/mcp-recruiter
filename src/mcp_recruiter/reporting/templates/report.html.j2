@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Recruiter - 招聘报告: {{ report.job_title }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; line-height: 1.6; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+        header { background: linear-gradient(135deg, #1a365d, #2d5f8a); color: white; padding: 40px 30px; border-radius: 12px; margin-bottom: 30px; }
+        header h1 { font-size: 2em; margin-bottom: 8px; }
+        header .meta { opacity: 0.8; font-size: 0.9em; }
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 30px; }
+        .stat-card { background: white; border-radius: 10px; padding: 20px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .stat-card .value { font-size: 2em; font-weight: bold; color: #2d5f8a; }
+        .stat-card .label { font-size: 0.85em; color: #666; margin-top: 4px; }
+        .section { background: white; border-radius: 10px; padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .section h2 { color: #1a365d; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 2px solid #e2e8f0; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f8fafc; font-weight: 600; color: #475569; font-size: 0.85em; text-transform: uppercase; }
+        tr:hover { background: #f1f5f9; }
+        .rank { font-weight: bold; color: #2d5f8a; }
+        .score-high { color: #16a34a; font-weight: bold; }
+        .score-mid { color: #d97706; font-weight: bold; }
+        .score-low { color: #dc2626; font-weight: bold; }
+        .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+        .charts canvas { max-height: 400px; }
+        .recommendation { background: linear-gradient(135deg, #065f46, #059669); color: white; padding: 30px; border-radius: 10px; margin-top: 24px; }
+        .recommendation h2 { color: white; border-color: rgba(255,255,255,0.3); }
+        .recommendation .rec-name { font-size: 1.5em; font-weight: bold; }
+        .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin: 2px; }
+        .tag-green { background: #dcfce7; color: #166534; }
+        .tag-red { background: #fee2e2; color: #991b1b; }
+        footer { text-align: center; padding: 20px; color: #94a3b8; font-size: 0.85em; }
+        @media (max-width: 768px) {
+            .stats { grid-template-columns: repeat(2, 1fr); }
+            .charts { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>技术方案招聘报告</h1>
+            <p style="font-size:1.2em; margin:8px 0;">职位: {{ report.job_title }}</p>
+            <p class="meta">生成时间: {{ report.generated_at.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+        </header>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="value">{{ report.total_candidates_discovered }}</div>
+                <div class="label">海选发现</div>
+            </div>
+            <div class="stat-card">
+                <div class="value">{{ report.total_screened }}</div>
+                <div class="label">初试通过</div>
+            </div>
+            <div class="stat-card">
+                <div class="value">{{ report.total_tested }}</div>
+                <div class="label">笔试完成</div>
+            </div>
+            <div class="stat-card">
+                <div class="value">{{ report.score_cards|length }}</div>
+                <div class="label">最终候选人</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>候选人排名</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>排名</th>
+                        <th>候选人</th>
+                        <th>综合分</th>
+                        <th>能力</th>
+                        <th>健康</th>
+                        <th>生态</th>
+                        <th>测试</th>
+                        <th>优势</th>
+                        <th>风险</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for card in report.score_cards %}
+                    <tr>
+                        <td class="rank">#{{ card.rank }}</td>
+                        <td><strong>{{ card.display_name }}</strong></td>
+                        <td class="{% if card.composite_score >= 80 %}score-high{% elif card.composite_score >= 50 %}score-mid{% else %}score-low{% endif %}">
+                            {{ "%.1f"|format(card.composite_score) }}
+                        </td>
+                        <td>{{ "%.2f"|format(card.capability_score) }}</td>
+                        <td>{{ "%.2f"|format(card.health_score) }}</td>
+                        <td>{{ "%.2f"|format(card.ecosystem_score) }}</td>
+                        <td>{{ "%.2f"|format(card.test_score) if card.test_score > 0 else "N/A" }}</td>
+                        <td>
+                            {% for s in card.strengths[:2] %}
+                            <span class="tag tag-green">{{ s }}</span>
+                            {% endfor %}
+                        </td>
+                        <td>
+                            {% for w in card.weaknesses[:2] %}
+                            <span class="tag tag-red">{{ w }}</span>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="charts">
+            <div class="section">
+                <h2>综合评分对比</h2>
+                <canvas id="barChart"></canvas>
+            </div>
+            <div class="section">
+                <h2>四维雷达图</h2>
+                <canvas id="radarChart"></canvas>
+            </div>
+        </div>
+
+        {% if report.recommendation %}
+        <div class="recommendation">
+            <h2>录用建议</h2>
+            <p class="rec-name">推荐: {{ report.recommendation }}</p>
+            {% if report.runner_up %}
+            <p style="margin-top:8px;">备选: {{ report.runner_up }}</p>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        <footer>
+            Generated by MCP Recruiter - 技术方案招聘系统
+        </footer>
+    </div>
+
+    <script>
+        const chartData = {{ chart_data_json }};
+        const colors = ['#2d5f8a', '#059669', '#d97706', '#7c3aed', '#dc2626', '#0891b2'];
+
+        // Bar chart
+        new Chart(document.getElementById('barChart'), {
+            type: 'bar',
+            data: {
+                labels: chartData.labels,
+                datasets: [{
+                    label: '综合得分',
+                    data: chartData.datasets.composite,
+                    backgroundColor: colors.slice(0, chartData.labels.length),
+                    borderRadius: 6,
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: { beginAtZero: true, max: 100, title: { display: true, text: '得分/100' } }
+                }
+            }
+        });
+
+        // Radar chart
+        new Chart(document.getElementById('radarChart'), {
+            type: 'radar',
+            data: {
+                labels: ['能力', '健康度', '生态', '测试'],
+                datasets: chartData.radar.map((item, i) => ({
+                    ...item,
+                    borderColor: colors[i % colors.length],
+                    backgroundColor: colors[i % colors.length] + '20',
+                }))
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    r: { beginAtZero: true, max: 100, ticks: { stepSize: 20 } }
+                }
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+# ── MCP Recruiter Test Scenarios ──
+# Standalone test scenario file that can be loaded with --scenarios option.
+# Each scenario contains test cases that will be executed in the sandbox.
+
+- name: "基础工具调用"
+  description: "测试 MCP 工具的基本调用能力"
+  timeout_seconds: 60
+  max_retries: 2
+  test_cases:
+    - name: "列举工具"
+      mcp_tool_name: "tools/list"
+      expected_behavior: "schema_match"
+      expected_value: "tools"
+      description: "验证能够列出所有可用工具"
+
+    - name: "调用读取工具"
+      mcp_tool_name: "read_file"
+      mcp_arguments:
+        path: "/tmp/test.txt"
+      expected_behavior: "no_error"
+      description: "验证工具调用不报错"
+
+- name: "性能测试"
+  description: "测试工具调用的响应性能"
+  timeout_seconds: 30
+  max_retries: 1
+  test_cases:
+    - name: "快速搜索"
+      mcp_tool_name: "search_files"
+      mcp_arguments:
+        pattern: "*.txt"
+      expected_behavior: "no_error"
+      description: "验证搜索响应时间合理"

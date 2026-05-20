@@ -1,0 +1,41 @@
+# ── MCP Recruiter Demo Job Description ──
+# Soft requirements to show the full pipeline flow in a demo.
+
+title: "文件系统与搜索 MCP 服务器"
+
+problem_statement: >
+  需要找一个能够提供文件系统操作和搜索能力的 MCP 服务器，
+  用于工具调用场景，支持 stdio 传输，最好是活跃维护的开源项目。
+
+required_capabilities:
+  - "file"
+  - "search"
+  - "filesystem"
+
+preferred_capabilities:
+  - "write"
+  - "directory"
+  - "wildcard"
+
+# Relaxed for demo — every candidate passes
+hard_requirements:
+  min_stars: 0
+  max_days_since_update: 3650
+  min_tool_count: 0
+  require_license: false
+
+top_n_candidates: 3
+
+test_scenarios:
+  - name: "基础文件读取"
+    description: "测试能否正常读取文件内容"
+    test_cases:
+      - name: "读取测试文件"
+        mcp_tool_name: "read_file"
+        expected_behavior: "no_error"
+
+scoring_weights:
+  capability: 0.30
+  health: 0.15
+  ecosystem: 0.15
+  test: 0.40
