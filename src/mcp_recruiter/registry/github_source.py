@@ -40,58 +40,190 @@ class GitHubSource(AbstractRegistrySource):
             time.sleep(self._min_interval - elapsed)
 
     async def search(self, query: str, limit: int = 20) -> list[RawCandidate]:
-        """Search GitHub for MCP server repos.
+        """Search GitHub for MCP server repos using multi-strategy.
 
-        Uses GitHub's repository search API with MCP-related topics.
+        Uses GitHub's repository search API with topic filtering.
         """
-        # Build search query: MCP topic + user query terms
-        search_query = f"topic:mcp topic:mcp-server {query}"
         candidates: list[RawCandidate] = []
 
         async with httpx.AsyncClient(timeout=30) as client:
-            page = 1
-            while len(candidates) < limit and page <= 3:
+            candidates = await self._search_repos(client, query, limit)
+
+        return candidates[:limit]
+
+    async def search_code(self, query: str, limit: int = 10) -> list[RawCandidate]:
+        """Search GitHub code for files containing MCP-related imports.
+
+        This finds repos that actually implement MCP but may not have
+        the 'mcp' or 'mcp-server' topic tags.
+        """
+        candidates: list[RawCandidate] = []
+        seen_repos: set[str] = set()
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            # Search for MCP SDK import patterns in code
+            code_queries = [
+                f'"@modelcontextprotocol/sdk" {query}',
+                f'"from mcp" {query}',
+                f'"import mcp" {query}',
+                f'"mcp.server" {query}',
+            ]
+
+            for code_query in code_queries[:2]:  # Limit to avoid rate issues
                 params = {
-                    "q": search_query,
-                    "sort": "stars",
-                    "order": "desc",
-                    "per_page": min(limit, 30),
-                    "page": page,
+                    "q": code_query,
+                    "per_page": min(limit, 10),
                 }
                 self._rate_limit_wait()
                 resp = await client.get(
-                    f"{self.BASE_URL}/search/repositories",
+                    f"{self.BASE_URL}/search/code",
                     headers=self._headers(),
                     params=params,
                 )
                 self._last_request_time = time.time()
 
                 if resp.status_code != 200:
-                    break
+                    continue
 
                 data = resp.json()
-                items = data.get("items", [])
+                for item in data.get("items", []):
+                    repo_info = item.get("repository", {})
+                    full_name = repo_info.get("full_name", "")
+                    if full_name in seen_repos:
+                        continue
+                    seen_repos.add(full_name)
 
-                for item in items:
-                    c = RawCandidate(
+                    candidates.append(RawCandidate(
                         source=RegistrySource.GITHUB,
-                        identifier=item.get("full_name", ""),
-                        name=item.get("name", ""),
-                        description=item.get("description", "") or "",
-                        url=item.get("html_url", ""),
-                        stars=item.get("stargazers_count", 0),
-                        language=item.get("language", ""),
-                        topics=item.get("topics", []),
-                        last_updated=self._parse_date(item.get("pushed_at")),
-                        open_issues=item.get("open_issues_count", 0),
-                        license=(item.get("license") or {}).get("spdx_id", ""),
-                        raw_data=item,
-                    )
-                    candidates.append(c)
+                        identifier=full_name,
+                        name=repo_info.get("name", ""),
+                        description=repo_info.get("description", "") or "",
+                        url=repo_info.get("html_url", ""),
+                        stars=repo_info.get("stargazers_count", 0),
+                        language=repo_info.get("language", ""),
+                        topics=repo_info.get("topics", []),
+                        last_updated=self._parse_date(repo_info.get("pushed_at")),
+                        open_issues=repo_info.get("open_issues_count", 0),
+                        license=(repo_info.get("license") or {}).get("spdx_id", ""),
+                        raw_data=repo_info,
+                    ))
 
-                if len(items) < params["per_page"]:
-                    break
-                page += 1
+        return candidates[:limit]
+
+    async def search_by_readme(self, query: str, limit: int = 10) -> list[RawCandidate]:
+        """Search GitHub repos by README content to find relevant projects."""
+        candidates: list[RawCandidate] = []
+        seen_repos: set[str] = set()
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            readme_query = f"{query} in:readme"
+            params = {
+                "q": readme_query,
+                "sort": "stars",
+                "order": "desc",
+                "per_page": min(limit, 10),
+            }
+            self._rate_limit_wait()
+            resp = await client.get(
+                f"{self.BASE_URL}/search/repositories",
+                headers=self._headers(),
+                params=params,
+            )
+            self._last_request_time = time.time()
+
+            if resp.status_code != 200:
+                return candidates
+
+            data = resp.json()
+            for item in data.get("items", []):
+                full_name = item.get("full_name", "")
+                if full_name in seen_repos:
+                    continue
+                seen_repos.add(full_name)
+
+                candidates.append(RawCandidate(
+                    source=RegistrySource.GITHUB,
+                    identifier=full_name,
+                    name=item.get("name", ""),
+                    description=item.get("description", "") or "",
+                    url=item.get("html_url", ""),
+                    stars=item.get("stargazers_count", 0),
+                    language=item.get("language", ""),
+                    topics=item.get("topics", []),
+                    last_updated=self._parse_date(item.get("pushed_at")),
+                    open_issues=item.get("open_issues_count", 0),
+                    license=(item.get("license") or {}).get("spdx_id", ""),
+                    raw_data=item,
+                ))
+
+        return candidates[:limit]
+
+    async def search_all_strategies(self, query: str, limit_per: int = 10) -> list[RawCandidate]:
+        """Run all search strategies and return merged, deduplicated results."""
+        topic_results = await self.search(query, limit=limit_per)
+        code_results = await self.search_code(query, limit=limit_per)
+        readme_results = await self.search_by_readme(query, limit=limit_per)
+
+        seen: set[str] = set()
+        merged: list[RawCandidate] = []
+        for c in topic_results + code_results + readme_results:
+            if c.identifier not in seen:
+                seen.add(c.identifier)
+                merged.append(c)
+
+        return sorted(merged, key=lambda x: x.stars, reverse=True)
+
+    async def _search_repos(
+        self, client: httpx.AsyncClient, query: str, limit: int
+    ) -> list[RawCandidate]:
+        """Internal: search repos by topic query."""
+        # Build search query: MCP topic + user query terms
+        search_query = f"topic:mcp topic:mcp-server {query}"
+        candidates: list[RawCandidate] = []
+
+        page = 1
+        while len(candidates) < limit and page <= 3:
+            params = {
+                "q": search_query,
+                "sort": "stars",
+                "order": "desc",
+                "per_page": min(limit, 30),
+                "page": page,
+            }
+            self._rate_limit_wait()
+            resp = await client.get(
+                f"{self.BASE_URL}/search/repositories",
+                headers=self._headers(),
+                params=params,
+            )
+            self._last_request_time = time.time()
+
+            if resp.status_code != 200:
+                break
+
+            data = resp.json()
+            items = data.get("items", [])
+
+            for item in items:
+                c = RawCandidate(
+                    source=RegistrySource.GITHUB,
+                    identifier=item.get("full_name", ""),
+                    name=item.get("name", ""),
+                    description=item.get("description", "") or "",
+                    url=item.get("html_url", ""),
+                    stars=item.get("stargazers_count", 0),
+                    language=item.get("language", ""),
+                    topics=item.get("topics", []),
+                    last_updated=self._parse_date(item.get("pushed_at")),
+                    open_issues=item.get("open_issues_count", 0),
+                    license=(item.get("license") or {}).get("spdx_id", ""),
+                    raw_data=item,
+                )
+                candidates.append(c)
+
+            if len(items) < params["per_page"]:
+                break
+            page += 1
 
         return candidates[:limit]
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..core.enums import CandidateType
 from .base import CandidateTypeHandler
 from .mcp_tool import MCPToolHandler
+from .base import GenericOSSHandler
 
 
 class ExtensionRegistry:
@@ -17,6 +18,8 @@ class ExtensionRegistry:
     def _register_defaults(self):
         mcp = MCPToolHandler()
         self._handlers[mcp.candidate_type] = mcp
+        oss = GenericOSSHandler()
+        self._handlers[oss.candidate_type] = oss
 
     def register(self, handler: CandidateTypeHandler):
         self._handlers[handler.candidate_type] = handler

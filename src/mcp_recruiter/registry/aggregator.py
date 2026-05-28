@@ -6,22 +6,40 @@ import asyncio
 from typing import Any
 
 from ..core.enums import RegistrySource as RS
+from ..core.llm_client import SearchQueryVariant
 from .base import RawCandidate, RegistrySource
 from .cache import RegistryCache
 from .github_source import GitHubSource
 from .mcp_hub_source import MCPHubSource
 from .npm_source import NpmSource
+from .web_search_source import WebSearchSource
+from .awesome_list_source import AwesomeListSource
+from .pypi_source import PyPISource
 
 
 class RegistryAggregator:
     """Orchestrates search across multiple registry sources."""
 
-    def __init__(self, cache_dir: str = "./data/cache", github_token: str = ""):
+    def __init__(
+        self,
+        cache_dir: str = "./data/cache",
+        github_token: str = "",
+        enable_web: bool = True,
+        enable_awesome: bool = True,
+        enable_pypi: bool = True,
+    ):
         self.sources: dict[RS, RegistrySource] = {
             RS.GITHUB: GitHubSource(token=github_token),
             RS.NPM: NpmSource(),
             RS.MCP_HUB: MCPHubSource(),
         }
+        if enable_web:
+            self.sources[RS.WEB_SEARCH] = WebSearchSource()
+        if enable_awesome:
+            self.sources[RS.AWESOME] = AwesomeListSource()
+        if enable_pypi:
+            self.sources[RS.PYPI] = PyPISource()
+
         self.cache = RegistryCache(cache_dir)
 
     async def search(self, query: str, limit_per_source: int = 15) -> list[RawCandidate]:
@@ -52,9 +70,12 @@ class RegistryAggregator:
         return deduped
 
     def _deduplicate(self, candidates: list[RawCandidate]) -> list[RawCandidate]:
-        """Deduplicate by preferring GitHub > npm > MCP_Hub."""
+        """Deduplicate by preferring GitHub > npm > MCP_Hub > PyPI > Awesome > Web."""
         seen: dict[str, RawCandidate] = {}
-        priority = {RS.GITHUB: 3, RS.NPM: 2, RS.MCP_HUB: 1}
+        priority = {
+            RS.GITHUB: 6, RS.NPM: 5, RS.MCP_HUB: 4,
+            RS.PYPI: 3, RS.AWESOME: 2, RS.WEB_SEARCH: 1,
+        }
 
         for c in candidates:
             key = self._canonical_key(c)
@@ -68,6 +89,66 @@ class RegistryAggregator:
 
         # Sort by stars descending
         return sorted(seen.values(), key=lambda x: x.stars, reverse=True)
+
+    async def search_with_variants(
+        self,
+        variants: list[SearchQueryVariant],
+        limit_per_source: int = 15,
+    ) -> list[RawCandidate]:
+        """Search all sources with multiple query variants and merge results.
+
+        Each SearchQueryVariant targets a specific source type with a specific query.
+        Results from all variants are deduplicated and ranked by stars.
+        """
+        all_candidates: list[RawCandidate] = []
+        tasks: list[asyncio.Task] = []
+
+        async def _search_source(
+            source_type: RS, source: RegistrySource, query: str
+        ) -> list[RawCandidate]:
+            try:
+                return await source.search(query, limit=limit_per_source)
+            except Exception as e:
+                print(f"[warn] Source {source_type.value} query '{query[:40]}...' failed: {e}")
+                return []
+
+        # Group variants by source type and create tasks
+        for variant in variants:
+            source_type = RS.GITHUB  # default
+            if variant.source_type == "github_topic":
+                source_type = RS.GITHUB
+            elif variant.source_type == "github_code":
+                source_type = RS.GITHUB
+            elif variant.source_type == "github_readme":
+                source_type = RS.GITHUB
+            elif variant.source_type == "web":
+                source_type = RS.WEB_SEARCH
+            elif variant.source_type == "pypi":
+                source_type = RS.PYPI
+            elif variant.source_type == "awesome":
+                source_type = RS.AWESOME
+
+            source = self.sources.get(source_type)
+            if source is None:
+                continue
+
+            tasks.append(_search_source(source_type, source, variant.query_string))
+
+        # Also add the default NPM and MCP_HUB searches using first variant's keywords
+        for source_type, source in self.sources.items():
+            if source_type in (RS.NPM, RS.MCP_HUB):
+                for variant in variants[:2]:  # Use first 2 variants
+                    tasks.append(_search_source(source_type, source, variant.query_string))
+
+        # Run all tasks concurrently
+        if tasks:
+            results = await asyncio.gather(*tasks)
+            for result in results:
+                all_candidates.extend(result)
+
+        # Deduplicate across all sources
+        deduped = self._deduplicate(all_candidates)
+        return deduped
 
     @staticmethod
     def _canonical_key(c: RawCandidate) -> str:

@@ -20,20 +20,8 @@ class MCPToolHandler(CandidateTypeHandler):
     def detect(self, raw_metadata: dict) -> bool:
         return raw_metadata.get("type") in ("mcp_tool", "mcp")
 
-    def build_resume(self, raw_metadata: dict) -> Resume:
-        # Convert dict back to RawCandidate, then build resume
-        from ..registry.base import RawCandidate
-
-        candidate = RawCandidate(
-            source=raw_metadata.get("source", "unknown"),
-            identifier=raw_metadata.get("identifier", ""),
-            name=raw_metadata.get("name", ""),
-            description=raw_metadata.get("description", ""),
-            url=raw_metadata.get("url", ""),
-            stars=raw_metadata.get("stars", 0),
-            raw_data=raw_metadata,
-        )
-        return build_mcp_resume(candidate)
+    def build_resume_from_candidate(self, candidate: RawCandidate, details: dict | None = None) -> Resume:
+        return build_mcp_resume(candidate, details)
 
     def score_capabilities(self, resume: Resume, job: JobDescription) -> float:
         return mcp_score_capability(resume, job)

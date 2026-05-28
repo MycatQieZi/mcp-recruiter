@@ -13,6 +13,7 @@ from rich.table import Table
 
 from ..core.config import load_config
 from ..core.enums import Stage
+from ..core.llm_client import LLMClient
 from ..core.models import (
     HardRequirements,
     JobDescription,
@@ -23,6 +24,7 @@ from ..core.models import (
 from ..core.state import PipelineStateMachine
 from ..core.store import PipelineStore
 from ..registry.aggregator import RegistryAggregator
+from ..registry.query_expander import QueryExpander
 from ..screening.hard_filter import apply_hard_filters
 from ..screening.resume_builder import build_resume
 from ..screening.soft_scorer import score_capability, score_ecosystem, score_health
@@ -78,9 +80,10 @@ def _extract_search_query_from_yaml(job_file: str) -> str:
 @app.command()
 def create_job(
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output YAML file path"),
+    smart: bool = typer.Option(False, "--smart", help="Use LLM to intelligently generate job description"),
 ):
-    """交互式创建招聘职位: 通过 TUI 问答式生成 job_description.yaml."""
-    path, meta = interactive_create_job(output_path=output)
+    """交互式创建招聘职位: 通过 TUI 问答式生成 job_description.yaml, 或使用 --smart 由 AI 智能生成."""
+    path, meta = interactive_create_job(output_path=output, use_smart=smart)
     if not path:
         return
     run_now = typer.confirm("\n是否立即运行招聘流程?", default=True)
@@ -94,14 +97,19 @@ def run(
     config_file: Optional[str] = typer.Option(None, "--config", "-c", help="Config file path"),
     skip_test: bool = typer.Option(False, "--skip-test", help="Skip sandbox testing stage"),
     search_query: str = typer.Option("", "--query", "-q", help="Additional search query terms"),
+    smart: bool = typer.Option(False, "--smart", help="Use LLM to intelligently generate JD and expand search queries"),
 ):
     """Run the full hiring pipeline (Sea -> Screen -> Written -> Interview).
 
     If no --job is provided, launches interactive TUI to create one first.
+    Use --smart for LLM-assisted JD generation and intelligent search.
     """
     if not job_file:
-        console.print("[bold yellow]未指定职位文件，启动交互式创建向导...[/bold yellow]")
-        path, _meta = interactive_create_job(output_path=None)
+        if smart:
+            console.print("[bold yellow]未指定职位文件，启动 AI 智能创建向导...[/bold yellow]")
+        else:
+            console.print("[bold yellow]未指定职位文件，启动交互式创建向导...[/bold yellow]")
+        path, _meta = interactive_create_job(output_path=None, use_smart=smart)
         if not path:
             console.print("[yellow]已取消[/yellow]")
             return
@@ -109,7 +117,7 @@ def run(
         search_query = search_query or _meta.get("search_query", "")
         job_file = path
 
-    _run_pipeline(job_file, config_file, skip_test, search_query)
+    _run_pipeline(job_file, config_file, skip_test, search_query, use_smart=smart)
 
 
 def _run_pipeline(
@@ -117,6 +125,7 @@ def _run_pipeline(
     config_file: Optional[str],
     skip_test: bool,
     search_query: str,
+    use_smart: bool = False,
 ):
     config = load_config(config_file)
     store = PipelineStore(config.data_dir)
@@ -142,11 +151,42 @@ def _run_pipeline(
     aggregator = RegistryAggregator(
         cache_dir=f"{config.data_dir}/cache",
         github_token=config.github_token,
+        enable_web=config.search_web_enabled,
+        enable_awesome=config.search_awesome_enabled,
+        enable_pypi=config.search_pypi_enabled,
     )
 
-    console.print(f"[dim]Search query: {search_query}[/dim]")
+    # Initialize LLM for query expansion if enabled
+    llm = LLMClient(
+        api_key=config.openai_api_key,
+        model=config.openai_model,
+        base_url=config.openai_base_url,
+    )
+    expander = QueryExpander(llm)
 
-    candidates = asyncio.run(aggregator.search(search_query))
+    # Generate search query variants via LLM expansion or fallback
+    if config.search_use_llm_expansion and llm.available:
+        console.print("[dim]Using LLM to expand search queries...[/dim]")
+    else:
+        console.print("[dim]Using fallback search query expansion[/dim]")
+
+    search_variants = asyncio.run(expander.expand(job))
+    console.print(f"[dim]Generated {len(search_variants)} search query variants across multiple sources[/dim]")
+
+    # Execute multi-source, multi-query search
+    candidates = asyncio.run(aggregator.search_with_variants(search_variants))
+
+    # If multi-variant search returned few results, fall back to basic search
+    if len(candidates) < 5:
+        console.print("[yellow]Multi-variant search returned few results, trying basic search...[/yellow]")
+        basic_candidates = asyncio.run(aggregator.search(search_query))
+        # Merge and deduplicate
+        seen_ids = {c.identifier for c in candidates}
+        for c in basic_candidates:
+            if c.identifier not in seen_ids:
+                seen_ids.add(c.identifier)
+                candidates.append(c)
+
     console.print(f"[green]Found {len(candidates)} candidates from registries[/green]")
 
     if not candidates:

@@ -34,6 +34,17 @@ class AppConfig(BaseModel):
     default_weights: ScoreWeights = Field(default_factory=ScoreWeights)
     default_top_n: int = 5
 
+    # LLM
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
+
+    # Search strategy
+    search_web_enabled: bool = True
+    search_awesome_enabled: bool = True
+    search_pypi_enabled: bool = True
+    search_use_llm_expansion: bool = True
+
     # Display
     verbose: bool = False
 

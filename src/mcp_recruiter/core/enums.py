@@ -36,6 +36,9 @@ class RegistrySource(str, Enum):
     GITHUB = "github"
     NPM = "npm"
     MCP_HUB = "mcp_hub"
+    AWESOME = "awesome"
+    WEB_SEARCH = "web_search"
+    PYPI = "pypi"
 
 
 class ExpectedBehavior(str, Enum):

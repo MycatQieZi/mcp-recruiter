@@ -9,13 +9,54 @@ from ..core.models import HealthMetrics, EcosystemMetrics, JobDescription, Resum
 
 
 def score_capability(resume: Resume, job: JobDescription) -> float:
-    """Score capability match between resume and job requirements (0-1)."""
+    """Score capability match between resume and job requirements (0-1).
+
+    For MCP_TOOL: Jaccard similarity on tool names.
+    For API/GENERIC: Keyword matching on description + tool names.
+    """
+    from ..core.enums import CandidateType
+
     if not job.required_capabilities and not job.preferred_capabilities:
         # No requirements specified — score based on tool count
         tool_count = len(resume.tools_provided)
         return min(tool_count / 10.0, 1.0)
 
-    # Jaccard similarity on required capabilities
+    if resume.candidate_type in (CandidateType.API, CandidateType.AGENT, CandidateType.SKILL):
+        return _score_generic_capability(resume, job)
+
+    return _score_mcp_capability(resume, job)
+
+
+def _score_generic_capability(resume: Resume, job: JobDescription) -> float:
+    """Score capability for generic OSS using description semantics."""
+    combined = f"{resume.description} {' '.join(t.name for t in resume.tools_provided)}".lower()
+
+    # Count how many required capabilities are mentioned in description/tools
+    matches = 0
+    for cap in job.required_capabilities:
+        if cap.lower() in combined:
+            matches += 1
+
+    required_score = matches / max(len(job.required_capabilities), 1)
+
+    # Preferred bonus
+    pref_matches = 0
+    for cap in job.preferred_capabilities:
+        if cap.lower() in combined:
+            pref_matches += 1
+    pref_bonus = (
+        (pref_matches / max(len(job.preferred_capabilities), 1)) * 0.2
+        if job.preferred_capabilities else 0
+    )
+
+    # Tool count as capability breadth indicator
+    tool_bonus = min(len(resume.tools_provided) / 20.0, 1.0) * 0.1
+
+    return min(required_score * 0.7 + pref_bonus + tool_bonus, 1.0)
+
+
+def _score_mcp_capability(resume: Resume, job: JobDescription) -> float:
+    """Score capability for MCP tools using Jaccard similarity."""
     resume_caps = set(t.name.lower() for t in resume.tools_provided)
     resume_caps.update(r.lower() for r in resume.resources)
     required_set = set(c.lower() for c in job.required_capabilities)

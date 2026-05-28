@@ -17,7 +17,31 @@ from ..registry.base import RawCandidate
 
 
 def build_resume(candidate: RawCandidate, details: dict | None = None) -> Resume:
-    """Build a standardized Resume from a raw candidate and optional details."""
+    """Build a standardized Resume from a raw candidate and optional details.
+
+    Uses CandidateTypeHandler to dispatch to the appropriate builder
+    based on the candidate's source type.
+    """
+    from ..core.enums import RegistrySource
+    from ..extensions.base import GenericOSSHandler
+
+    details = details or {}
+
+    # For non-MCP sources (Web, Awesome, PyPI), use GenericOSSHandler
+    if candidate.source in (
+        RegistrySource.WEB_SEARCH,
+        RegistrySource.AWESOME,
+        RegistrySource.PYPI,
+    ):
+        handler = GenericOSSHandler()
+        return handler.build_resume_from_candidate(candidate, details)
+
+    # Default: MCP tool handling
+    return _build_mcp_resume(candidate, details)
+
+
+def _build_mcp_resume(candidate: RawCandidate, details: dict | None = None) -> Resume:
+    """Build an MCP-tool specific Resume."""
     details = details or {}
 
     # Parse README for tool signatures

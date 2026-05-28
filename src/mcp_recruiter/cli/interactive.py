@@ -134,11 +134,99 @@ def _ask_output_path(default_name: str) -> str:
 
 def interactive_create_job(
     output_path: Optional[str] = None,
+    use_smart: bool = False,
 ) -> str:
     """Run the full interactive job creation workflow.
 
-    Returns the path to the generated YAML file.
+    Args:
+        output_path: Where to save the generated YAML.
+        use_smart: If True, use LLM-assisted smart generation.
+
+    Returns the path to the generated YAML file and metadata dict.
     """
+    if use_smart:
+        return _smart_create_job(output_path)
+    return _manual_create_job(output_path)
+
+
+def _smart_create_job(output_path: Optional[str] = None) -> tuple[str, dict]:
+    """LLM-assisted smart JD creation from a single natural language description."""
+    import asyncio
+
+    console.print()
+    console.rule("[bold green]智能创建招聘职位 — AI 辅助生成[/bold green]")
+    console.print(
+        "[dim]只需用自然语言描述你的需求，AI 将自动生成完整的职位描述[/dim]"
+    )
+    console.print()
+
+    user_desc = Prompt.ask(
+        "[bold cyan]请描述你的需求[/bold cyan]\n  用自然语言描述你想找什么样的技术方案",
+    )
+
+    if not user_desc.strip():
+        console.print("[yellow]需求描述不能为空，已取消[/yellow]")
+        return "", {}
+
+    # Initialize LLM client
+    from ..core.llm_client import LLMClient
+    from ..core.config import load_config
+    from .jd_llm_generator import JobDescriptionGenerator
+
+    config = load_config()
+    llm = LLMClient(
+        api_key=config.openai_api_key,
+        model=config.openai_model,
+        base_url=config.openai_base_url,
+    )
+
+    if not llm.available:
+        console.print("[red]OPENAI_API_KEY 未设置，无法使用智能模式[/red]")
+        console.print("[yellow]切换到手动模式...[/yellow]")
+        return _manual_create_job(output_path)
+
+    console.print("[dim]正在调用 AI 生成职位描述...[/dim]")
+
+    try:
+        generator = JobDescriptionGenerator(llm)
+        job, search_queries = asyncio.run(generator.generate(user_desc))
+    except Exception as e:
+        console.print(f"[red]AI 生成失败: {e}[/red]")
+        console.print("[yellow]切换到手动模式...[/yellow]")
+        return _manual_create_job(output_path)
+
+    # Preview
+    console.print()
+    console.rule("[bold]AI 生成的职位描述预览[/bold]")
+
+    yaml_content = generator.build_yaml(job, search_queries, user_desc)
+    console.print(Panel(yaml_content, border_style="yellow", title="预览"))
+
+    # Allow user to edit
+    confirmed = Confirm.ask(
+        "\n[bold]是否确认此职位描述？[/bold]",
+        default=True,
+    )
+    if not confirmed:
+        console.print("[yellow]已取消，切换到手动模式...[/yellow]")
+        return _manual_create_job(output_path)
+
+    # Save
+    safe_name = job.title.lower().replace(" ", "_").replace("/", "_")[:40]
+    if not output_path:
+        output_path = f"examples/{safe_name}.yaml"
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(yaml_content, encoding="utf-8")
+    console.print(f"[green]已保存到: {out.resolve()}[/green]")
+
+    # Return primary search query (use first capability keywords)
+    primary_query = " ".join(job.required_capabilities[:5]) if job.required_capabilities else "mcp server"
+    return str(out.resolve()), {"search_query": primary_query}
+
+
+def _manual_create_job(output_path: Optional[str] = None) -> tuple[str, dict]:
     console.print()
     console.rule("[bold green]创建招聘职位 — 交互式引导[/bold green]")
     console.print(
